@@ -1,0 +1,11 @@
+{
+  "id": "netlook",
+  "name": "Netlook",
+  "repo": "its-ash/netlook",
+  "package": "com.itsash.netlook",
+  "tagline": "See who is on your Wi-Fi.",
+  "description": "Netlook scans your Wi-Fi and lists every device that answers, with names from reverse DNS, NetBIOS, mDNS and UPnP, open ports and a guessed type such as printer, TV or camera. Name your devices, mark the ones you know, test their latency, and get an alert when a new one joins. Everything runs on your phone, with no account and no tracking.",
+  "category": "Tools",
+  "icon": "assets/icon/logo-1024.png",
+  "homepage": "https://netlook.itsash.in/"
+}
