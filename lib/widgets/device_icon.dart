@@ -12,5 +12,8 @@ IconData deviceIcon(DeviceType t) => switch (t) {
       DeviceType.camera => Icons.videocam_rounded,
       DeviceType.computer => Icons.computer_rounded,
       DeviceType.smartHome => Icons.home_rounded,
+      DeviceType.mobile => Icons.tablet_android_rounded,
+      DeviceType.console => Icons.sports_esports_rounded,
+      DeviceType.storage => Icons.storage_rounded,
       DeviceType.unknown => Icons.devices_other_rounded,
     };

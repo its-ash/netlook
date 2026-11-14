@@ -11,8 +11,14 @@ See who is on your Wi-Fi.
 - Guesses the device type from open ports and services: router, printer, TV or cast device, camera, Apple device, computer and more.
 - Wi-Fi header with SSID, your IP, gateway and DNS.
 - Name your devices, mark them as known, see first and last seen, open ports and services, and run a ping test.
+- Set a device's type yourself when the guess is wrong, and group devices by room or owner.
+- Network map: the router in the middle and every device around it. Pinch to zoom, tap to open.
+- Port scanner: common ports, 1–1024, all 65,535 or your own list. Tap a web port to open it.
+- Wake-on-LAN: type a computer's MAC address once, then wake it from your phone.
+- Rescan one device without scanning the whole network. Full scans probe familiar devices first and adapt their timeouts to your network.
+- Public IP and internet provider, looked up only when you ask (or on app open, if you turn that on).
 - Optional new-device alerts: a background check every 30, 60 or 120 minutes on your saved network.
-- Everything stays on your phone. No account, no analytics.
+- Everything stays on your phone. No account, no analytics. The only requests outside your network are update checks and the public IP lookup you ask for.
 
 Android 10+ does not let apps read the ARP table or other devices' MAC addresses, so Netlook cannot show vendors. Devices are told apart by IP, names and services.
 

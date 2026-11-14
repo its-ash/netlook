@@ -18,6 +18,9 @@ class Device {
     this.isSelf = false,
     this.online = false,
     this.server,
+    this.userType,
+    this.group,
+    this.mac,
   })  : names = names ?? <String>{},
         services = services ?? <String>{},
         ports = ports ?? <int>{};
@@ -36,7 +39,19 @@ class Device {
   /// The user's own name for the device.
   String? label;
   bool known;
+
+  /// The guessed type, refreshed by every scan.
   DeviceType type;
+
+  /// The type the user picked; wins over [type] when set.
+  DeviceType? userType;
+
+  /// The user's group (a room or an owner), or null.
+  String? group;
+
+  /// MAC typed by the user for Wake-on-LAN (Android cannot read it), as
+  /// `aa:bb:cc:dd:ee:ff`.
+  String? mac;
   bool isGateway;
   bool isSelf;
 
@@ -54,9 +69,12 @@ class Device {
     return ip;
   }
 
+  /// The type shown to the user: their pick, else the guess.
+  DeviceType get kind => userType ?? type;
+
   /// Short line under the name: type plus the first services.
   String get summary {
-    final parts = <String>[type.label];
+    final parts = <String>[kind.label];
     final svc = services.where((s) => s.startsWith('_')).map(serviceLabel).toSet().take(2);
     parts.addAll(svc);
     return parts.join(' · ');
@@ -97,6 +115,9 @@ class Device {
         'gw': isGateway,
         'self': isSelf,
         'server': server,
+        if (userType != null) 'utype': userType!.code,
+        if (group != null) 'group': group,
+        if (mac != null) 'mac': mac,
       };
 
   static Device fromJson(Map<String, Object?> j) => Device(
@@ -112,6 +133,9 @@ class Device {
         isGateway: (j['gw'] as bool?) ?? false,
         isSelf: (j['self'] as bool?) ?? false,
         server: j['server'] as String?,
+        userType: DeviceType.tryCode(j['utype'] as String?),
+        group: j['group'] as String?,
+        mac: j['mac'] as String?,
       );
 }
 

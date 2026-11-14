@@ -6,23 +6,29 @@ import 'package:theme/theme.dart';
 import '../core/device.dart';
 import '../core/device_guess.dart';
 import '../core/ping_stats.dart';
+import '../core/wol.dart';
 import '../platform/net_channel.dart';
+import '../scan/net_tools.dart';
+import '../scan/scanner.dart';
 import '../store/device_store.dart';
 import '../widgets/device_icon.dart';
+import 'port_scan_screen.dart';
 
 class DeviceScreen extends StatefulWidget {
   const DeviceScreen({
     super.key,
     required this.store,
     required this.platform,
-    required this.networkKey,
+    required this.info,
     required this.ip,
   });
 
   final DeviceStore store;
   final NetPlatform platform;
-  final String networkKey;
+  final NetInfo info;
   final String ip;
+
+  String get networkKey => info.key;
 
   @override
   State<DeviceScreen> createState() => _DeviceScreenState();
@@ -32,6 +38,15 @@ class _DeviceScreenState extends State<DeviceScreen> {
   static const _pings = 5;
   PingStats? _stats;
   bool _pinging = false;
+  bool _rescanning = false;
+  bool _waking = false;
+  late final NetScanner _scanner = NetScanner(widget.platform);
+
+  @override
+  void dispose() {
+    _scanner.cancel();
+    super.dispose();
+  }
 
   Device? get _device {
     for (final d in widget.store.devices(widget.networkKey)) {
@@ -51,6 +66,96 @@ class _DeviceScreenState extends State<DeviceScreen> {
     if (v == null) return;
     d.label = v.trim().isEmpty ? null : v.trim();
     await widget.store.update(widget.networkKey, d);
+  }
+
+  Future<void> _pickType(Device d) async {
+    const auto = 'auto';
+    final v = await UiActionSheet.show<String>(
+      context,
+      title: 'Device type',
+      message: 'Your choice replaces the guess and is kept across scans.',
+      actions: [
+        UiSheetAction(auto, value: auto, icon: Icons.auto_awesome_rounded, subtitle: 'Guess: ${d.type.label}'),
+        for (final t in DeviceType.pickable) UiSheetAction(t.label, value: t.code, icon: deviceIcon(t)),
+      ],
+    );
+    if (v == null) return;
+    d.userType = v == auto ? null : DeviceType.tryCode(v);
+    await widget.store.update(widget.networkKey, d);
+  }
+
+  Future<void> _pickGroup(Device d) async {
+    const none = '\u0000none', create = '\u0000new';
+    final existing = widget.store.groups(widget.networkKey);
+    var v = existing.isEmpty
+        ? create
+        : await UiActionSheet.show<String>(
+            context,
+            title: 'Group',
+            message: 'Group devices by room or by owner.',
+            actions: [
+              for (final g in existing) UiSheetAction(g, value: g, icon: g == d.group ? Icons.check_rounded : Icons.folder_outlined),
+              const UiSheetAction('New group', value: create, icon: Icons.create_new_folder_outlined),
+              if (d.group != null) const UiSheetAction('No group', value: none, icon: Icons.folder_off_outlined),
+            ],
+          );
+    if (v == null || !mounted) return;
+    if (v == create) {
+      v = await UiDialog.prompt(
+        context,
+        title: 'New group',
+        message: 'For example Living room, Kids or Office.',
+        label: 'Group name',
+        initialValue: existing.isEmpty ? (d.group ?? '') : '',
+        validator: (s) => s.trim().isEmpty ? 'Enter a name' : null,
+      );
+      if (v == null) return;
+    }
+    d.group = v == none ? null : v.trim();
+    await widget.store.update(widget.networkKey, d);
+  }
+
+  Future<void> _editMac(Device d) async {
+    final v = await UiDialog.prompt(
+      context,
+      title: 'MAC address',
+      message: 'Android does not let apps read it. Find it in your router\'s device list or in the computer\'s network settings. Leave empty to remove it.',
+      label: 'MAC address',
+      hint: 'aa:bb:cc:dd:ee:ff',
+      initialValue: d.mac ?? '',
+      validator: (s) => s.trim().isEmpty || normalizeMac(s) != null ? null : 'Use 12 hex digits, like aa:bb:cc:dd:ee:ff',
+    );
+    if (v == null) return;
+    d.mac = v.trim().isEmpty ? null : normalizeMac(v);
+    await widget.store.update(widget.networkKey, d);
+  }
+
+  Future<void> _wake(Device d) async {
+    final mac = parseMac(d.mac ?? '');
+    if (mac == null) return;
+    setState(() => _waking = true);
+    final ok = await sendWakeOnLan(mac, subnet: widget.info.subnet);
+    if (!mounted) return;
+    setState(() => _waking = false);
+    context.showToast(
+      ok ? 'Wake signal sent. The device can take up to a minute to come online.' : 'Could not send the wake signal.',
+      status: ok ? UiStatus.success : UiStatus.danger,
+    );
+  }
+
+  Future<void> _rescan(Device d) async {
+    setState(() => _rescanning = true);
+    final hit = await _scanner.scanOne(widget.info, d.ip);
+    if (!mounted) return;
+    await widget.store.recordOne(widget.networkKey, d.ip, hit);
+    if (!mounted) return;
+    setState(() => _rescanning = false);
+    context.showToast(hit == null ? 'No reply. The device may be asleep or gone.' : 'Device updated.',
+        status: hit == null ? UiStatus.warning : UiStatus.success);
+  }
+
+  void _portScan(Device d) {
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => PortScanScreen(ip: d.ip, name: d.displayName)));
   }
 
   Future<void> _setKnown(Device d, bool v) async {
@@ -128,7 +233,7 @@ class _DeviceScreenState extends State<DeviceScreen> {
                   UiListTile(
                     d.displayName,
                     subtitle: d.summary,
-                    icon: deviceIcon(d.type),
+                    icon: deviceIcon(d.kind),
                     trailing: UiStatusPill(d.online ? 'Online' : 'Offline', status: d.online ? UiStatus.success : UiStatus.neutral, dot: d.online),
                   ),
                   UiListTile(
@@ -137,6 +242,21 @@ class _DeviceScreenState extends State<DeviceScreen> {
                     value: d.label ?? 'Not set',
                     chevron: true,
                     onTap: () => _rename(d),
+                  ),
+                  if (!d.isSelf)
+                    UiListTile(
+                      'Type',
+                      icon: Icons.category_rounded,
+                      value: d.userType == null ? '${d.type.label} (guess)' : d.userType!.label,
+                      chevron: true,
+                      onTap: () => _pickType(d),
+                    ),
+                  UiListTile(
+                    'Group',
+                    icon: Icons.folder_rounded,
+                    value: d.group ?? 'None',
+                    chevron: true,
+                    onTap: () => _pickGroup(d),
                   ),
                   UiSwitchTile(
                     'Known device',
@@ -159,6 +279,45 @@ class _DeviceScreenState extends State<DeviceScreen> {
                   if (d.server != null) UiListTile('Software', subtitle: d.server, maxSubtitleLines: 4),
                   UiListTile('First seen', value: _stamp(d.firstSeen)),
                   UiListTile('Last seen', value: _stamp(d.lastSeen)),
+                ],
+              ),
+              const UiGap(UiSpace.lg),
+              if (!d.isSelf) ...[
+                UiListGroup(
+                  header: 'Wake-on-LAN',
+                  footer: 'Turns on a sleeping computer or NAS that has Wake-on-LAN enabled. It must be wired or support wake over Wi-Fi.',
+                  children: [
+                    UiListTile('MAC address', icon: Icons.memory_rounded, value: d.mac ?? 'Not set', chevron: true, onTap: () => _editMac(d)),
+                  ],
+                ),
+                const UiGap(UiSpace.md),
+                UiButton(
+                  'Wake device',
+                  icon: Icons.power_settings_new_rounded,
+                  variant: UiButtonVariant.secondary,
+                  loading: _waking,
+                  onPressed: d.mac == null || _waking ? null : () => _wake(d),
+                ),
+                const UiGap(UiSpace.lg),
+              ],
+              UiListGroup(
+                header: 'Tools',
+                children: [
+                  UiListTile(
+                    'Rescan this device',
+                    subtitle: 'Ports, names and services, without a full network scan',
+                    icon: Icons.refresh_rounded,
+                    trailing: _rescanning ? const UiSpinner(size: 18) : null,
+                    chevron: !_rescanning,
+                    onTap: _rescanning ? null : () => _rescan(d),
+                  ),
+                  UiListTile(
+                    'Scan ports',
+                    subtitle: 'Common ports, 1–1024, all, or your own list',
+                    icon: Icons.lan_rounded,
+                    chevron: true,
+                    onTap: () => _portScan(d),
+                  ),
                 ],
               ),
               const UiGap(UiSpace.lg),

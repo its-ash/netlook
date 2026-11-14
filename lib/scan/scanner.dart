@@ -18,12 +18,13 @@ class ScanProgress {
 }
 
 class ScanResult {
-  const ScanResult({required this.info, required this.devices, required this.capped});
+  const ScanResult({required this.info, required this.devices, required this.capped, required this.elapsed});
   final NetInfo info;
   final List<Device> devices;
 
   /// The network was wider than /22, so only the block around this phone was scanned.
   final bool capped;
+  final Duration elapsed;
 }
 
 enum _Tcp { open, refused, closed }
@@ -35,40 +36,69 @@ class NetScanner {
 
   final NetPlatform platform;
 
-  static const _hostConcurrency = 32; // x14 sockets each: stays under the fd limit
-  static const _tcpTimeout = Duration(milliseconds: 350);
+  // Sweep: ping + 6 quick ports per host (7 fds) x 64 hosts stays well under
+  // the fd limit. Ports of live hosts: 8 remaining probes x 32 hosts.
+  static const _sweepConcurrency = 64;
+  static const _portConcurrency = 32;
 
   bool _cancel = false;
   void cancel() => _cancel = true;
 
-  Future<ScanResult?> scan(NetInfo info, {void Function(ScanProgress)? onProgress}) async {
+  /// TCP timeout for this scan, set from the gateway's round trip.
+  Duration _tcpTimeout = const Duration(milliseconds: 350);
+
+  /// Probe timeout from a gateway round trip: fast LANs get short timeouts,
+  /// slow or busy ones longer. 250–600 ms.
+  static Duration timeoutFor(double? gatewayRttMs) {
+    if (gatewayRttMs == null) return const Duration(milliseconds: 400);
+    final ms = (gatewayRttMs * 4 + 150).clamp(250, 600).round();
+    return Duration(milliseconds: ms);
+  }
+
+  /// Scans the network. [hints] are IPs seen before: they are probed first so
+  /// familiar devices show up early.
+  Future<ScanResult?> scan(NetInfo info, {void Function(ScanProgress)? onProgress, Iterable<String> hints = const []}) async {
     _cancel = false;
+    final watch = Stopwatch()..start();
     final subnet = info.subnet;
     if (subnet == null) return null;
-    final hosts = subnet.hosts();
+    final hosts = orderHosts(subnet.hosts(), first: [?info.gateway, ...hints]);
     void report(double f, String m) => onProgress?.call(ScanProgress(f.clamp(0, 1), m));
 
     await platform.setMulticast(true);
     try {
       report(0, 'Starting scan');
       // Discovery that runs alongside the sweep.
-      final nsd = platform.browseServices(serviceTypes.keys.toList(), durationMs: 6000);
+      final nsd = platform.browseServices(serviceTypes.keys.toList(), durationMs: 5000);
       final ssdp = _ssdp(subnet);
 
-      // 1. Sweep: ping + TCP probes.
+      final gw = info.gateway;
+      _tcpTimeout = timeoutFor(gw == null ? null : await platform.ping(gw, timeoutMs: 500));
+
+      // 1. Sweep: ping + quick TCP probes to find who is there.
       final alive = <String, Set<int>>{};
       var done = 0;
-      await forEachLimited(hosts, _hostConcurrency, (ip) async {
-        final r = await _probeHost(ip);
+      await forEachLimited(hosts, _sweepConcurrency, (ip) async {
+        final r = await _probeHost(ip, quickPorts);
         if (r != null) alive[ip] = r;
         done++;
         if (done % 8 == 0 || done == hosts.length) {
-          report(0.8 * done / hosts.length, 'Probing $done of ${hosts.length} addresses');
+          final found = alive.isEmpty ? '' : ' · ${alive.length} found';
+          report(0.6 * done / hosts.length, 'Probing $done of ${hosts.length} addresses$found');
         }
       }, cancelled: () => _cancel);
       if (_cancel) return null;
 
-      // 2. Names: reverse DNS and NetBIOS for hosts that answered.
+      // 2. The other ports, only on hosts that answered.
+      report(0.62, 'Checking ports on ${alive.length} devices');
+      final rest = [for (final p in probePorts) if (!quickPorts.contains(p)) p];
+      await forEachLimited(alive.keys.toList(), _portConcurrency, (ip) async {
+        final open = await _openPorts(ip, rest);
+        alive[ip]!.addAll(open);
+      }, cancelled: () => _cancel);
+      if (_cancel) return null;
+
+      // 3. Names: reverse DNS and NetBIOS for hosts that answered.
       report(0.82, 'Reading names');
       final now = DateTime.now();
       final byIp = <String, Device>{};
@@ -105,7 +135,7 @@ class NetScanner {
       ]);
       if (_cancel) return null;
 
-      // 3. mDNS and SSDP results.
+      // 4. mDNS and SSDP results.
       report(0.92, 'Waiting for service discovery');
       for (final hit in await nsd) {
         if (!subnet.contains(hit.ip)) continue;
@@ -134,27 +164,71 @@ class NetScanner {
         );
       }
       report(1, 'Done');
-      return ScanResult(info: info, devices: list, capped: subnet.isCapped);
+      return ScanResult(info: info, devices: list, capped: subnet.isCapped, elapsed: watch.elapsed);
+    } finally {
+      await platform.setMulticast(false);
+    }
+  }
+
+  /// Rescans one device: all probe ports, names and services. Returns null
+  /// when it does not answer.
+  Future<Device?> scanOne(NetInfo info, String ip) async {
+    _cancel = false;
+    final subnet = info.subnet;
+    if (subnet == null) return null;
+    _tcpTimeout = const Duration(milliseconds: 600);
+    await platform.setMulticast(true);
+    try {
+      final nsd = platform.browseServices(serviceTypes.keys.toList(), durationMs: 3000);
+      final ports = await _probeHost(ip, probePorts, pingTimeoutMs: 800);
+      if (ports == null) {
+        await nsd;
+        return null;
+      }
+      final now = DateTime.now();
+      final d = Device(
+        ip: ip,
+        ports: ports,
+        firstSeen: now,
+        lastSeen: now,
+        isGateway: ip == info.gateway,
+        isSelf: ip == info.ip,
+      );
+      final names = await Future.wait([_reverse(ip), _netbios([ip])]);
+      if (names[0] case final String n) d.names.add(n);
+      final nb = (names[1] as Map<String, NetbiosResult>)[ip]?.hostName;
+      if (nb != null) d.names.add(nb);
+      for (final hit in await nsd) {
+        if (hit.ip != ip) continue;
+        if (hit.name.isNotEmpty) d.names.add(hit.name);
+        d.services.add(hit.type);
+      }
+      return d;
     } finally {
       await platform.setMulticast(false);
     }
   }
 
   /// Open ports when the host is alive, null when nothing answered.
-  Future<Set<int>?> _probeHost(String ip) async {
+  Future<Set<int>?> _probeHost(String ip, List<int> ports, {int pingTimeoutMs = 350}) async {
     final results = await Future.wait([
-      platform.ping(ip, timeoutMs: 350),
-      for (final p in probePorts) _tcp(ip, p),
+      platform.ping(ip, timeoutMs: pingTimeoutMs),
+      for (final p in ports) _tcp(ip, p),
     ]);
     final pingMs = results.first as double?;
     final open = <int>{};
     var alive = pingMs != null;
-    for (var i = 0; i < probePorts.length; i++) {
+    for (var i = 0; i < ports.length; i++) {
       final r = results[i + 1] as _Tcp;
-      if (r == _Tcp.open) open.add(probePorts[i]);
+      if (r == _Tcp.open) open.add(ports[i]);
       if (r != _Tcp.closed) alive = true;
     }
     return alive ? open : null;
+  }
+
+  Future<Set<int>> _openPorts(String ip, List<int> ports) async {
+    final r = await Future.wait([for (final p in ports) _tcp(ip, p)]);
+    return {for (var i = 0; i < ports.length; i++) if (r[i] == _Tcp.open) ports[i]};
   }
 
   /// A refused connection still proves the host is there (errno 111 Linux, 61 macOS).
@@ -278,6 +352,14 @@ class NetScanner {
       client.close(force: true);
     }
   }
+}
+
+/// [hosts] with the addresses in [first] moved to the front (in that order,
+/// only those that are in [hosts]), the rest in their original order.
+List<String> orderHosts(List<String> hosts, {Iterable<String> first = const []}) {
+  final all = hosts.toSet();
+  final head = <String>{for (final ip in first) if (all.contains(ip)) ip};
+  return [...head, for (final ip in hosts) if (!head.contains(ip)) ip];
 }
 
 class _SsdpInfo {

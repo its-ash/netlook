@@ -16,6 +16,8 @@ class DeviceStore extends ChangeNotifier {
   static const _kInterval = 'netlook.interval';
   static const _kWatchKey = 'netlook.watchKey';
   static const _kWatchName = 'netlook.watchName';
+  static const _kAutoPublicIp = 'netlook.autoPublicIp';
+  static const _kLastScan = 'netlook.lastScanMs';
 
   static const intervals = [30, 60, 120];
 
@@ -63,6 +65,41 @@ class DeviceStore extends ChangeNotifier {
     notifyListeners();
     return firstScan ? const [] : added;
   }
+
+  /// Merges a single-device rescan. [hit] null means the device did not answer.
+  Future<void> recordOne(String networkKey, String ip, Device? hit) async {
+    final stored = _of(networkKey);
+    final existing = stored[ip];
+    if (hit == null) {
+      existing?.online = false;
+    } else if (existing == null) {
+      mergeScan({}, [hit]);
+      stored[ip] = hit;
+    } else {
+      existing.absorb(hit);
+    }
+    notifyListeners();
+    await _save();
+  }
+
+  /// Group names used on this network, sorted.
+  List<String> groups(String networkKey) =>
+      ({for (final d in devices(networkKey)) ?d.group}.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
+
+  /// Look up the public IP each time the app opens (off: only on tap).
+  bool get autoPublicIp => _prefs.getBool(_kAutoPublicIp) ?? false;
+  Future<void> setAutoPublicIp(bool v) async {
+    await _prefs.setBool(_kAutoPublicIp, v);
+    notifyListeners();
+  }
+
+  /// How long the last full scan took, for the home screen footer.
+  Duration? get lastScanTime {
+    final ms = _prefs.getInt(_kLastScan);
+    return ms == null ? null : Duration(milliseconds: ms);
+  }
+
+  Future<void> setLastScanTime(Duration d) => _prefs.setInt(_kLastScan, d.inMilliseconds);
 
   Future<void> update(String networkKey, Device d) async {
     notifyListeners();

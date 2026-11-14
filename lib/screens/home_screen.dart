@@ -3,12 +3,15 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:theme/theme.dart';
 
 import '../core/device.dart';
+import '../core/public_ip.dart';
 import '../core/subnet.dart';
 import '../platform/net_channel.dart';
+import '../scan/net_tools.dart';
 import '../scan/scanner.dart';
 import '../store/device_store.dart';
 import '../widgets/device_icon.dart';
 import 'device_screen.dart';
+import 'map_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -29,6 +32,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _capped = false;
   ScanProgress? _progress;
   bool _askLocation = false;
+  PublicIpInfo? _public;
+  bool _publicLoading = false;
+  String? _publicError;
 
   @override
   void initState() {
@@ -51,7 +57,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _init() async {
     await _refreshInfo();
-    if (_info != null) _scan();
+    if (_info != null) {
+      if (widget.store.autoPublicIp) _lookupPublicIp();
+      _scan();
+    }
+  }
+
+  Future<void> _lookupPublicIp() async {
+    if (_publicLoading) return;
+    setState(() {
+      _publicLoading = true;
+      _publicError = null;
+    });
+    PublicIpInfo? info;
+    String? error;
+    try {
+      info = await fetchPublicIp();
+    } catch (_) {
+      error = 'Lookup failed';
+    }
+    if (!mounted) return;
+    setState(() {
+      _publicLoading = false;
+      _public = info ?? _public;
+      _publicError = error;
+    });
   }
 
   Future<void> _refreshInfo() async {
@@ -59,6 +89,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final located = await Permission.locationWhenInUse.isGranted;
     if (!mounted) return;
     setState(() {
+      // Another network (or none) means another public IP.
+      if (info?.key != _info?.key) _public = null;
       _info = info;
       _loaded = true;
       _askLocation = !located;
@@ -77,11 +109,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _scanning = true;
       _progress = const ScanProgress(0, 'Starting scan');
     });
-    final result = await _scanner.scan(info, onProgress: (p) {
-      if (mounted) setState(() => _progress = p);
-    });
+    final result = await _scanner.scan(
+      info,
+      hints: [for (final d in widget.store.devices(info.key)) d.ip],
+      onProgress: (p) {
+        if (mounted) setState(() => _progress = p);
+      },
+    );
     if (result != null) {
       await widget.store.recordScan(info, result.devices);
+      await widget.store.setLastScanTime(result.elapsed);
     }
     if (!mounted) return;
     setState(() {
@@ -94,7 +131,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final info = _info;
     if (info == null) return;
     Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => DeviceScreen(store: widget.store, platform: widget.platform, networkKey: info.key, ip: d.ip),
+      builder: (_) => DeviceScreen(store: widget.store, platform: widget.platform, info: info, ip: d.ip),
+    ));
+  }
+
+  void _openMap() {
+    final info = _info;
+    if (info == null) return;
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => MapScreen(store: widget.store, platform: widget.platform, info: info),
     ));
   }
 
@@ -105,6 +150,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         title: 'Netlook',
         back: false,
         actions: [
+          if (_info != null)
+            UiIconButton(Icons.hub_rounded, tooltip: 'Network map', onPressed: _openMap),
           UiIconButton(
             Icons.settings_rounded,
             tooltip: 'Settings',
@@ -139,7 +186,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _Header(info: info, ssid: info.ssid ?? widget.store.ssidOf(info.key)),
+        _Header(
+          info: info,
+          ssid: info.ssid ?? widget.store.ssidOf(info.key),
+          public: _public,
+          publicLoading: _publicLoading,
+          publicError: _publicError,
+          onPublic: _lookupPublicIp,
+        ),
         if (_askLocation && info.ssid == null) ...[
           const UiGap(UiSpace.md),
           UiAlert(
@@ -163,14 +217,37 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         if (devices.isEmpty && !_scanning)
           const UiEmptyState(icon: Icons.devices_other_rounded, title: 'No devices yet', message: 'Run a scan to list the devices on this network.', compact: true)
         else
-          UiListGroup(
-            header: '$online online${fresh > 0 ? ' · $fresh not marked known' : ''}',
-            footer: 'Android hides other devices\' MAC addresses from apps, so devices are told apart by IP, '
-                'name and services only. A device whose IP changes can show up as new.',
-            children: [for (final d in devices) _tile(d)],
-          ),
+          ..._groups(devices, online, fresh),
       ],
     );
+  }
+
+  /// One list, or one list per group when the user has grouped devices.
+  List<Widget> _groups(List<Device> devices, int online, int fresh) {
+    final took = widget.store.lastScanTime;
+    final footer = '${took != null ? 'Last scan took ${(took.inMilliseconds / 1000).toStringAsFixed(1)} s. ' : ''}'
+        'Android hides other devices\' MAC addresses from apps, so devices are told apart by IP, '
+        'name and services only. A device whose IP changes can show up as new.';
+    final summary = '$online online${fresh > 0 ? ' · $fresh not marked known' : ''}';
+    final names = widget.store.groups(_info!.key);
+    if (names.isEmpty) {
+      return [UiListGroup(header: summary, footer: footer, children: [for (final d in devices) _tile(d)])];
+    }
+    final ungrouped = [for (final d in devices) if (d.group == null) d];
+    final sections = <Widget>[];
+    for (final g in names) {
+      final members = [for (final d in devices) if (d.group == g) d];
+      final on = members.where((d) => d.online).length;
+      sections
+        ..add(UiListGroup(header: '$g · $on of ${members.length} online', children: [for (final d in members) _tile(d)]))
+        ..add(const UiGap(UiSpace.lg));
+    }
+    if (ungrouped.isNotEmpty) {
+      sections.add(UiListGroup(header: 'Other · $summary', footer: footer, children: [for (final d in ungrouped) _tile(d)]));
+    } else {
+      sections.removeLast();
+    }
+    return sections;
   }
 
   Widget _tile(Device d) {
@@ -178,7 +255,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return UiListTile(
       d.displayName,
       subtitle: d.online ? '${d.ip} · ${d.summary}' : '${d.ip} · last seen ${_ago(d.lastSeen)}',
-      icon: deviceIcon(d.type),
+      icon: deviceIcon(d.kind),
       iconStatus: d.online ? (isNew ? UiStatus.warning : UiStatus.accent) : UiStatus.neutral,
       trailing: d.online
           ? (isNew ? const UiStatusPill('New', status: UiStatus.warning) : const UiStatusPill('Online', status: UiStatus.success, dot: true))
@@ -206,10 +283,21 @@ String _ago(DateTime t) {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.info, required this.ssid});
+  const _Header({
+    required this.info,
+    required this.ssid,
+    required this.public,
+    required this.publicLoading,
+    required this.publicError,
+    required this.onPublic,
+  });
 
   final NetInfo info;
   final String? ssid;
+  final PublicIpInfo? public;
+  final bool publicLoading;
+  final String? publicError;
+  final VoidCallback onPublic;
 
   @override
   Widget build(BuildContext context) {
@@ -221,6 +309,23 @@ class _Header extends StatelessWidget {
           UiKeyValue('Gateway', info.gateway ?? 'Unknown', copyable: info.gateway != null, mono: true),
           UiKeyValue('DNS', info.dns.isEmpty ? 'Unknown' : info.dns.join(', '), mono: true),
           UiKeyValue('Network', info.key, mono: true),
+          if (public != null) ...[
+            UiKeyValue('Public IP', public!.ip, copyable: true, mono: true),
+            if (public!.isp != null) UiKeyValue('Provider', public!.isp!),
+            if (public!.place != null) UiKeyValue('Location (approx.)', public!.place!),
+          ] else
+            UiKeyValue.custom(
+              'Public IP',
+              child: publicLoading
+                  ? const UiSpinner(size: 16)
+                  : UiButton(
+                      publicError == null ? 'Look up' : 'Retry',
+                      size: UiSize.sm,
+                      variant: UiButtonVariant.soft,
+                      icon: Icons.public_rounded,
+                      onPressed: onPublic,
+                    ),
+            ),
         ],
       ),
     );

@@ -12,6 +12,9 @@ enum DeviceType {
   camera('Camera', 'camera'),
   computer('Computer or server', 'computer'),
   smartHome('Smart home', 'home'),
+  mobile('Phone or tablet', 'mobile'),
+  console('Game console', 'console'),
+  storage('Storage (NAS)', 'nas'),
   unknown('Unknown device', 'unknown');
 
   const DeviceType(this.label, this.code);
@@ -20,24 +23,97 @@ enum DeviceType {
 
   static DeviceType fromCode(String? c) =>
       DeviceType.values.firstWhere((t) => t.code == c, orElse: () => DeviceType.unknown);
+
+  /// Null when [c] is not a type code (used for the optional user override).
+  static DeviceType? tryCode(String? c) {
+    for (final t in DeviceType.values) {
+      if (t.code == c) return t;
+    }
+    return null;
+  }
+
+  /// Types the user can pick for a device ("This phone" is set automatically).
+  static List<DeviceType> get pickable => [for (final t in values) if (t != phone) t];
 }
 
 /// TCP ports probed on every host.
 const probePorts = <int>[80, 443, 22, 53, 445, 139, 554, 5353, 8008, 8009, 62078, 7000, 9100];
 
+/// Ports probed first to find live hosts quickly. A refused connection on any
+/// port also proves the host is there; these are the ones firewalled devices
+/// most often leave open.
+const quickPorts = <int>[80, 443, 62078, 445, 8009, 22];
+
 const portNames = <int, String>{
+  20: 'FTP data',
+  21: 'FTP',
   22: 'SSH',
+  23: 'Telnet',
+  25: 'SMTP',
   53: 'DNS',
   80: 'HTTP',
+  81: 'HTTP alt',
+  88: 'Kerberos',
+  110: 'POP3',
+  111: 'RPC',
+  135: 'MS RPC',
   139: 'NetBIOS',
+  143: 'IMAP',
+  389: 'LDAP',
   443: 'HTTPS',
   445: 'SMB',
+  465: 'SMTPS',
+  515: 'Printer (LPD)',
+  548: 'AFP',
   554: 'RTSP',
+  587: 'SMTP submit',
+  631: 'IPP',
+  873: 'rsync',
+  993: 'IMAPS',
+  995: 'POP3S',
+  1080: 'SOCKS',
+  1194: 'OpenVPN',
+  1400: 'Sonos',
+  1433: 'MS SQL',
+  1723: 'PPTP',
+  1880: 'Node-RED',
+  1883: 'MQTT',
+  1900: 'UPnP',
+  2049: 'NFS',
+  3000: 'Web app',
+  3306: 'MySQL',
+  3389: 'Remote Desktop',
+  4070: 'Spotify Connect',
+  5000: 'UPnP / NAS',
+  5001: 'NAS HTTPS',
+  5060: 'SIP',
+  5222: 'XMPP',
   5353: 'mDNS',
+  5432: 'PostgreSQL',
+  5555: 'Android ADB',
+  5900: 'VNC',
+  6379: 'Redis',
+  6668: 'Tuya',
   7000: 'AirPlay',
+  7547: 'TR-069',
+  8000: 'HTTP alt',
   8008: 'Cast HTTP',
   8009: 'Cast',
+  8080: 'HTTP proxy',
+  8081: 'HTTP alt',
+  8123: 'Home Assistant',
+  8443: 'HTTPS alt',
+  8554: 'RTSP alt',
+  8883: 'MQTT TLS',
+  8888: 'HTTP alt',
+  9000: 'Web admin',
+  9090: 'Web admin',
   9100: 'Print (RAW)',
+  9443: 'HTTPS alt',
+  10000: 'Webmin',
+  32400: 'Plex',
+  37777: 'Dahua DVR',
+  49152: 'UPnP',
   62078: 'iPhone sync',
 };
 

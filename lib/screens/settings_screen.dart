@@ -84,13 +84,28 @@ class SettingsScreen extends StatelessWidget {
               ],
             ),
             const UiGap(UiSpace.lg),
+            UiListGroup(
+              header: 'Public IP',
+              footer: 'The lookup asks ipinfo.io for your public IP, internet provider and approximate area. '
+                  'It sends nothing else. When off, it runs only when you tap Look up on the home screen.',
+              children: [
+                UiSwitchTile(
+                  'Look up when the app opens',
+                  icon: Icons.public_rounded,
+                  value: store.autoPublicIp,
+                  onChanged: store.setAutoPublicIp,
+                ),
+              ],
+            ),
+            const UiGap(UiSpace.lg),
             const UiListGroup(
               header: 'Privacy',
               children: [
                 UiListTile(
                   'Everything stays on this phone',
                   subtitle: 'Scans only talk to devices on your own network. Location is used only so Android '
-                      'reveals the Wi-Fi name, never to find where you are. The internet is used only to check for app updates.',
+                      'reveals the Wi-Fi name, never to find where you are. The internet is used only to check for app '
+                      'updates and, when you ask, to look up your public IP.',
                   icon: Icons.lock_rounded,
                   iconStatus: UiStatus.success,
                 ),
