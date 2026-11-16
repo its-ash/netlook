@@ -145,7 +145,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return UiScaffold(
+    // Lazy page: the device lists are slivers, so only the rows on screen are built.
+    return UiScaffold.slivers(
       appBar: UiAppBar(
         title: 'Netlook',
         back: false,
@@ -161,66 +162,84 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      scrollable: true,
-      body: ListenableBuilder(listenable: widget.store, builder: (context, _) => _body(context)),
+      slivers: [
+        ListenableBuilder(
+          listenable: widget.store,
+          builder: (context, _) => SliverMainAxisGroup(slivers: _body(context)),
+        ),
+      ],
     );
   }
 
-  Widget _body(BuildContext context) {
+  static Widget _box(Widget child) => SliverToBoxAdapter(child: child);
+
+  List<Widget> _body(BuildContext context) {
     final info = _info;
     if (!_loaded) {
-      return const Padding(padding: EdgeInsets.only(top: 80), child: Center(child: UiSpinner(size: 28)));
+      return [_box(const Padding(padding: EdgeInsets.only(top: 80), child: Center(child: UiSpinner(size: 28))))];
     }
     if (info == null) {
-      return UiEmptyState(
-        icon: Icons.wifi_off_rounded,
-        title: 'Not connected',
-        message: 'Connect to a Wi-Fi network to see who is on it.',
-        action: UiButton('Try again', icon: Icons.refresh_rounded, onPressed: _init),
-      );
+      return [
+        _box(UiEmptyState(
+          icon: Icons.wifi_off_rounded,
+          title: 'Not connected',
+          message: 'Connect to a Wi-Fi network to see who is on it.',
+          action: UiButton('Try again', icon: Icons.refresh_rounded, onPressed: _init),
+        )),
+      ];
     }
     final devices = widget.store.devices(info.key)..sort((a, b) => compareDevices(a, b));
     final online = devices.where((d) => d.online).length;
     final fresh = devices.where((d) => d.online && !d.known && !d.isSelf && !d.isGateway).length;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _Header(
-          info: info,
-          ssid: info.ssid ?? widget.store.ssidOf(info.key),
-          public: _public,
-          publicLoading: _publicLoading,
-          publicError: _publicError,
-          onPublic: _lookupPublicIp,
-        ),
-        if (_askLocation && info.ssid == null) ...[
-          const UiGap(UiSpace.md),
-          UiAlert(
-            'Android only gives the Wi-Fi name to apps with location access. '
-            'Netlook uses it only to show the name, never to find your position.',
-            title: 'Show the Wi-Fi name?',
-            action: UiButton('Allow location', size: UiSize.sm, variant: UiButtonVariant.secondary, onPressed: _grantLocation),
+    return [
+      _box(Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _Header(
+            info: info,
+            ssid: info.ssid ?? widget.store.ssidOf(info.key),
+            public: _public,
+            publicLoading: _publicLoading,
+            publicError: _publicError,
+            onPublic: _lookupPublicIp,
           ),
-        ],
-        const UiGap(UiSpace.lg),
-        if (_scanning) ...[
-          UiProgressBar(_progress?.fraction, label: _progress?.message ?? 'Scanning'),
+          if (_askLocation && info.ssid == null) ...[
+            const UiGap(UiSpace.md),
+            UiAlert(
+              'Android only gives the Wi-Fi name to apps with location access. '
+              'Netlook uses it only to show the name, never to find your position.',
+              title: 'Show the Wi-Fi name?',
+              action: UiButton('Allow location', size: UiSize.sm, variant: UiButtonVariant.secondary, onPressed: _grantLocation),
+            ),
+          ],
           const UiGap(UiSpace.lg),
-        ] else
-          UiButton('Scan again', icon: Icons.radar_rounded, onPressed: _scan),
-        if (_capped) ...[
-          const UiGap(UiSpace.md),
-          const UiAlert('This network is larger than /22, so only the 1022 addresses around your phone are scanned.', status: UiStatus.warning),
+          if (_scanning) ...[
+            UiProgressBar(_progress?.fraction, label: _progress?.message ?? 'Scanning'),
+            const UiGap(UiSpace.lg),
+          ] else
+            UiButton('Scan again', icon: Icons.radar_rounded, onPressed: _scan),
+          if (_capped) ...[
+            const UiGap(UiSpace.md),
+            const UiAlert('This network is larger than /22, so only the 1022 addresses around your phone are scanned.', status: UiStatus.warning),
+          ],
+          const UiGap(UiSpace.lg),
         ],
-        const UiGap(UiSpace.lg),
-        if (devices.isEmpty && !_scanning)
-          const UiEmptyState(icon: Icons.devices_other_rounded, title: 'No devices yet', message: 'Run a scan to list the devices on this network.', compact: true)
-        else
-          ..._groups(devices, online, fresh),
-      ],
-    );
+      )),
+      if (devices.isEmpty && !_scanning)
+        _box(const UiEmptyState(icon: Icons.devices_other_rounded, title: 'No devices yet', message: 'Run a scan to list the devices on this network.', compact: true))
+      else
+        ..._groups(devices, online, fresh),
+    ];
   }
+
+  /// A lazy device list: only the rows on screen are built.
+  Widget _list(List<Device> devices, {required String header, String? footer}) => UiSliverListGroup(
+        header: header,
+        footer: footer,
+        itemCount: devices.length,
+        itemBuilder: (context, i) => _tile(devices[i]),
+      );
 
   /// One list, or one list per group when the user has grouped devices.
   List<Widget> _groups(List<Device> devices, int online, int fresh) {
@@ -231,7 +250,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final summary = '$online online${fresh > 0 ? ' · $fresh not marked known' : ''}';
     final names = widget.store.groups(_info!.key);
     if (names.isEmpty) {
-      return [UiListGroup(header: summary, footer: footer, children: [for (final d in devices) _tile(d)])];
+      return [_list(devices, header: summary, footer: footer)];
     }
     final ungrouped = [for (final d in devices) if (d.group == null) d];
     final sections = <Widget>[];
@@ -239,11 +258,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final members = [for (final d in devices) if (d.group == g) d];
       final on = members.where((d) => d.online).length;
       sections
-        ..add(UiListGroup(header: '$g · $on of ${members.length} online', children: [for (final d in members) _tile(d)]))
-        ..add(const UiGap(UiSpace.lg));
+        ..add(_list(members, header: '$g · $on of ${members.length} online'))
+        ..add(_box(const UiGap(UiSpace.lg)));
     }
     if (ungrouped.isNotEmpty) {
-      sections.add(UiListGroup(header: 'Other · $summary', footer: footer, children: [for (final d in ungrouped) _tile(d)]));
+      sections.add(_list(ungrouped, header: 'Other · $summary', footer: footer));
     } else {
       sections.removeLast();
     }
