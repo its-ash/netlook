@@ -120,6 +120,7 @@ class DeviceStore extends ChangeNotifier {
     _of(networkKey).remove(ip);
     notifyListeners();
     await _save();
+    if (watchKey == networkKey) onKnownChanged?.call();
   }
 
   List<String> knownIps(String networkKey) => [

@@ -6,6 +6,7 @@
     <!-- Multicast lock so mDNS and SSDP replies are delivered while scanning. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <!-- Only to let Android reveal the Wi-Fi name (SSID). Never used for position. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <!-- New-device alerts. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>

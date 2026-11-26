@@ -10,6 +10,7 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     private val io = Executors.newFixedThreadPool(32)
     private var lock: WifiManager.MulticastLock? = null
+    private val nsdBrowsers = mutableSetOf<NsdBrowser>()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -42,7 +43,12 @@ class MainActivity : FlutterActivity() {
                     "nsd" -> {
                         val types = call.argument<List<String>>("types") ?: emptyList()
                         val duration = (call.argument<Int>("duration") ?: 5000).toLong()
-                        NsdBrowser(this).browse(types, duration) { hits -> result.success(hits) }
+                        val browser = NsdBrowser(this)
+                        nsdBrowsers.add(browser)
+                        browser.browse(types, duration) { hits ->
+                            nsdBrowsers.remove(browser)
+                            result.success(hits)
+                        }
                     }
                     "watch" -> {
                         NetWatch.configure(
@@ -76,6 +82,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        for (browser in nsdBrowsers.toList()) {
+            browser.stop()
+        }
+        nsdBrowsers.clear()
         io.shutdownNow()
         setMulticast(false)
         super.onDestroy()

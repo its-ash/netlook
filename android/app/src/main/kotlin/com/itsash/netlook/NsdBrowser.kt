@@ -18,6 +18,7 @@ class NsdBrowser(ctx: Context) {
     private val listeners = mutableListOf<NsdManager.DiscoveryListener>()
     private var resolving = false
     private var finished = false
+    private var stopTask: Runnable? = null
 
     @Suppress("DEPRECATION")
     fun browse(types: List<String>, durationMs: Long, done: (List<Map<String, Any?>>) -> Unit) {
@@ -42,16 +43,27 @@ class NsdBrowser(ctx: Context) {
             } catch (_: Exception) {
             }
         }
-        main.postDelayed({
-            finished = true
-            for (l in listeners) {
-                try {
-                    nsd.stopServiceDiscovery(l)
-                } catch (_: Exception) {
-                }
-            }
+        val task = Runnable {
+            stop()
             done(results.toList())
-        }, durationMs)
+        }
+        stopTask = task
+        main.postDelayed(task, durationMs)
+    }
+
+    fun stop() {
+        if (finished) return
+        finished = true
+        stopTask?.let { main.removeCallbacks(it) }
+        stopTask = null
+        for (l in listeners) {
+            try {
+                nsd.stopServiceDiscovery(l)
+            } catch (_: Exception) {
+            }
+        }
+        listeners.clear()
+        queue.clear()
     }
 
     @Suppress("DEPRECATION")

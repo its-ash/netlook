@@ -108,6 +108,7 @@ class SettingsScreen extends StatelessWidget {
                       'updates and, when you ask, to look up your public IP.',
                   icon: Icons.lock_rounded,
                   iconStatus: UiStatus.success,
+                  maxSubtitleLines: 6,
                 ),
               ],
             ),

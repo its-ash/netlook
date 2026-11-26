@@ -57,6 +57,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _init() async {
     await _refreshInfo();
+    if (!mounted) return;
     if (_info != null) {
       if (widget.store.autoPublicIp) _lookupPublicIp();
       _scan();
